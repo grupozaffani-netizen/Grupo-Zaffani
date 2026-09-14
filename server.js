@@ -1,11 +1,12 @@
 // Servidor MCP (leitura apenas) para o Bling ERP.
 //
-// Expõe 5 ferramentas para o Claude consultar o Bling:
+// Expõe estas ferramentas para o Claude consultar o Bling:
 //   - listar_produtos
 //   - consultar_estoque
-//   - listar_pedidos_vendas
-//   - resumo_vendas_periodo   (agrega vendas por produto num período, com margem e estoque; aceita filtro por loja/canal)
-//   - listar_lojas            (lista lojas/canais cadastrados, pra descobrir o id a usar no filtro acima)
+//   - listar_pedidos_vendas   (pode filtrar por idContato, pra ver o histórico de um cliente)
+//   - resumo_vendas_periodo   (agrega vendas por produto num período, com margem e estoque)
+//   - listar_lojas
+//   - consultar_contato       (dados cadastrais + endereço/cidade de um cliente, por idContato)
 //
 // E duas rotas de navegador para conectar a conta Bling uma única vez:
 //   GET /            -> página de status + botão "Conectar ao Bling"
@@ -135,18 +136,26 @@ function createMcpServer() {
     {
       title: "Listar pedidos de venda do Bling",
       description:
-        "Lista pedidos de venda dentro de um período (formato AAAA-MM-DD), com paginação.",
+        "Lista pedidos de venda dentro de um período (formato AAAA-MM-DD), com paginação. Informe idContato pra ver só os pedidos de um cliente específico (útil pra checar se ele já comprou antes — combine com um período bem largo, tipo dataInicial='2015-01-01', e olhe o total de páginas/pedidos retornados).",
       inputSchema: {
         dataInicial: z.string().optional().describe("Data inicial AAAA-MM-DD"),
         dataFinal: z.string().optional().describe("Data final AAAA-MM-DD"),
+        idContato: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "Se informado, considera só pedidos desse cliente (contato.id retornado nos pedidos, ou pela ferramenta consultar_contato). Use com um período largo pra ver o histórico completo do cliente."
+          ),
         pagina: z.number().int().min(1).default(1),
         limite: z.number().int().min(1).max(100).default(100),
       },
     },
-    async ({ dataInicial, dataFinal, pagina, limite }) => {
+    async ({ dataInicial, dataFinal, idContato, pagina, limite }) => {
       const data = await blingGet("/pedidos/vendas", {
         dataInicial,
         dataFinal,
+        idContato,
         pagina,
         limite,
       });
@@ -195,6 +204,22 @@ function createMcpServer() {
     },
     async () => {
       const data = await blingGet("/lojas");
+      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "consultar_contato",
+    {
+      title: "Consultar dados de um cliente/contato no Bling",
+      description:
+        "Busca o cadastro completo de um cliente/contato do Bling por ID (inclui endereço, cidade e UF quando cadastrados). O ID vem no campo contato.id dos pedidos retornados por listar_pedidos_vendas ou resumo_vendas_periodo.",
+      inputSchema: {
+        idContato: z.number().int().describe("ID do contato no Bling (contato.id de um pedido)"),
+      },
+    },
+    async ({ idContato }) => {
+      const data = await blingGet(`/contatos/${idContato}`);
       return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     }
   );
