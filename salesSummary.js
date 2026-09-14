@@ -104,10 +104,20 @@ export async function resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos =
     .slice(0, MAX_PRODUTOS_ENRIQUECIDOS);
   const produtosNaoEnriquecidos = produtosVendidos.filter((p) => p.idProduto).length - comIdProduto.length;
 
+  // Nota: usamos /produtos (listagem, filtrando por código exato) em vez de
+  // /produtos/{id} (detalhe) — testado na prática e confirmado que só a
+  // listagem devolve "precoCusto" nesta conta. O endpoint de detalhe por id
+  // devolvia o campo ausente/undefined, fazendo toda margem sair null.
   const infosProduto = await mapWithConcurrency(comIdProduto, 3, async (p) => {
     try {
-      const resp = await blingGet(`/produtos/${p.idProduto}`);
-      const prod = resp?.data;
+      if (!p.codigo) {
+        return { idProduto: p.idProduto, erro: "Produto sem código no item do pedido — não deu pra buscar custo." };
+      }
+      const resp = await blingGet("/produtos", { codigo: p.codigo, limite: 1 });
+      const prod = resp?.data?.[0];
+      if (!prod) {
+        return { idProduto: p.idProduto, erro: `Código '${p.codigo}' não encontrado em /produtos.` };
+      }
       return {
         idProduto: p.idProduto,
         nomeCompleto: prod?.nome,
