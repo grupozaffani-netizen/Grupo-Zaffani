@@ -1,10 +1,11 @@
 // Servidor MCP (leitura apenas) para o Bling ERP.
 //
-// Expõe 4 ferramentas para o Claude consultar o Bling:
+// Expõe 5 ferramentas para o Claude consultar o Bling:
 //   - listar_produtos
 //   - consultar_estoque
 //   - listar_pedidos_vendas
-//   - resumo_vendas_periodo   (agrega vendas por produto num período, com margem e estoque)
+//   - resumo_vendas_periodo   (agrega vendas por produto num período, com margem e estoque; aceita filtro por loja/canal)
+//   - listar_lojas            (lista lojas/canais cadastrados, pra descobrir o id a usar no filtro acima)
 //
 // E duas rotas de navegador para conectar a conta Bling uma única vez:
 //   GET /            -> página de status + botão "Conectar ao Bling"
@@ -158,7 +159,7 @@ function createMcpServer() {
     {
       title: "Resumo de vendas por produto num período",
       description:
-        "Analisa todos os pedidos de venda de um período (ex: um fim de semana de bazar) e devolve, por produto: quantidade vendida, receita, preço médio, custo, margem e estoque atual. Pode demorar um pouco mais que as outras ferramentas porque busca item a item dos pedidos.",
+        "Analisa todos os pedidos de venda de um período (ex: um fim de semana de bazar, ou o dia de uma live) e devolve, por produto: quantidade vendida, receita, preço médio, custo, margem e estoque atual. Pode filtrar por loja/canal (idLoja) — use listar_lojas pra descobrir o ID. Pode demorar um pouco mais que as outras ferramentas porque busca item a item dos pedidos.",
       inputSchema: {
         dataInicial: z.string().describe("Data inicial AAAA-MM-DD"),
         dataFinal: z.string().describe("Data final AAAA-MM-DD"),
@@ -169,10 +170,31 @@ function createMcpServer() {
           .max(1000)
           .default(300)
           .describe("Limite de pedidos a analisar (proteção contra períodos muito longos)"),
+        idLoja: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "Se informado, considera só pedidos dessa loja/canal do Bling (ex: pra isolar vendas de um canal específico como o site). Descubra o ID com a ferramenta listar_lojas."
+          ),
       },
     },
-    async ({ dataInicial, dataFinal, maxPedidos }) => {
-      const data = await resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos });
+    async ({ dataInicial, dataFinal, maxPedidos, idLoja }) => {
+      const data = await resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos, idLoja });
+      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "listar_lojas",
+    {
+      title: "Listar lojas/canais cadastrados no Bling",
+      description:
+        "Lista as lojas/canais de venda cadastrados na conta Bling (ex: site, marketplaces), com id e nome. Use o id retornado no parâmetro idLoja de resumo_vendas_periodo pra filtrar vendas por canal.",
+      inputSchema: {},
+    },
+    async () => {
+      const data = await blingGet("/lojas");
       return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     }
   );
