@@ -1,9 +1,10 @@
 // Servidor MCP (leitura apenas) para o Bling ERP.
 //
-// Expõe 3 ferramentas para o Claude consultar o Bling:
+// Expõe 4 ferramentas para o Claude consultar o Bling:
 //   - listar_produtos
 //   - consultar_estoque
 //   - listar_pedidos_vendas
+//   - resumo_vendas_periodo   (agrega vendas por produto num período, com margem e estoque)
 //
 // E duas rotas de navegador para conectar a conta Bling uma única vez:
 //   GET /            -> página de status + botão "Conectar ao Bling"
@@ -20,6 +21,7 @@ import {
   isConnected,
   blingGet,
 } from "./bling.js";
+import { resumoVendasPeriodo } from "./salesSummary.js";
 
 const PORT = process.env.PORT || 3000;
 const app = express();
@@ -147,6 +149,30 @@ function createMcpServer() {
         pagina,
         limite,
       });
+      return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  server.registerTool(
+    "resumo_vendas_periodo",
+    {
+      title: "Resumo de vendas por produto num período",
+      description:
+        "Analisa todos os pedidos de venda de um período (ex: um fim de semana de bazar) e devolve, por produto: quantidade vendida, receita, preço médio, custo, margem e estoque atual. Pode demorar um pouco mais que as outras ferramentas porque busca item a item dos pedidos.",
+      inputSchema: {
+        dataInicial: z.string().describe("Data inicial AAAA-MM-DD"),
+        dataFinal: z.string().describe("Data final AAAA-MM-DD"),
+        maxPedidos: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .default(300)
+          .describe("Limite de pedidos a analisar (proteção contra períodos muito longos)"),
+      },
+    },
+    async ({ dataInicial, dataFinal, maxPedidos }) => {
+      const data = await resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos });
       return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     }
   );
