@@ -93,7 +93,17 @@ export async function resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos =
   const produtosVendidos = Array.from(porProduto.values());
 
   // Enriquece com custo e estoque atual (1 chamada por produto único).
-  const comIdProduto = produtosVendidos.filter((p) => p.idProduto);
+  // Cada pedido já custou 1 chamada; para não deixar a ferramenta lenta
+  // demais num período com muitos produtos distintos, enriquecemos só os
+  // mais vendidos (os que mais importam pra "o que destacou" e "o que
+  // repor"). Os demais aparecem no resultado sem custo/estoque.
+  const MAX_PRODUTOS_ENRIQUECIDOS = 40;
+  const comIdProduto = produtosVendidos
+    .filter((p) => p.idProduto)
+    .sort((a, b) => b.quantidadeVendida - a.quantidadeVendida)
+    .slice(0, MAX_PRODUTOS_ENRIQUECIDOS);
+  const produtosNaoEnriquecidos = produtosVendidos.filter((p) => p.idProduto).length - comIdProduto.length;
+
   const infosProduto = await mapWithConcurrency(comIdProduto, 3, async (p) => {
     try {
       const resp = await blingGet(`/produtos/${p.idProduto}`);
@@ -110,6 +120,9 @@ export async function resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos =
       return { idProduto: p.idProduto, erro: err.message };
     }
   });
+  const errosEnriquecimento = infosProduto
+    .filter((i) => i.erro)
+    .map((i) => ({ idProduto: i.idProduto, erro: i.erro }));
   const infoPorId = new Map(infosProduto.map((i) => [i.idProduto, i]));
 
   const resultado = produtosVendidos.map((p) => {
@@ -139,15 +152,19 @@ export async function resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos =
 
   resultado.sort((a, b) => b.quantidadeVendida - a.quantidadeVendida);
 
+  const todosErros = [...erros, ...errosEnriquecimento];
+
   return {
     periodo: { dataInicial, dataFinal },
     totalPedidosEncontrados: pedidos.length,
     pedidosCancelados,
     pedidosAnalisados: pedidosValidos.length,
     produtosDistintosVendidos: resultado.length,
-    erros: erros.length ? erros : undefined,
+    produtosComCustoEEstoque: comIdProduto.length,
+    erros: todosErros.length ? todosErros : undefined,
     produtos: resultado,
     nota:
-      "Pedidos cancelados foram filtrados por uma lista fixa de IDs de situação comuns do Bling (6=Cancelado, 12=Cancelado por... variações de conta). Se sua conta usa IDs diferentes, pedidos cancelados podem aparecer aqui — verifique 'numeroPedidos' incomuns.",
+      `Pedidos cancelados foram filtrados por uma lista fixa de IDs de situação comuns do Bling (6=Cancelado, 12=Cancelado por... variações de conta). Se sua conta usa IDs diferentes, pedidos cancelados podem aparecer aqui — verifique 'numeroPedidos' incomuns. ` +
+      `Custo e estoque atual foram buscados só para os ${MAX_PRODUTOS_ENRIQUECIDOS} produtos mais vendidos do período (por chamada individual à API), pra ferramenta não ficar lenta demais — os outros ${produtosNaoEnriquecidos} produtos vendidos aparecem sem essas informações (campos null). Peça pra reprocessar um subconjunto se precisar de custo/estoque de mais itens.`,
   };
 }
