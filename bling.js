@@ -136,10 +136,40 @@ export function isConnected() {
   return Boolean(tokens && tokens.refresh_token);
 }
 
-// Chamada genérica autenticada à API do Bling, com uma tentativa de
-// renovação de token em caso de 401 (token expirado no meio do caminho).
+// ---------------------------------------------------------------------
+// Limitador de taxa: o Bling permite ~3 requisições/segundo por conta.
+// Ferramentas como resumo_vendas_periodo disparam dezenas/centenas de
+// chamadas em paralelo (limitadas por concorrência, não por tempo), o
+// que estourava esse limite e derrubava boa parte das chamadas com
+// erro 429. Aqui garantimos um espaçamento mínimo entre o INÍCIO de
+// cada chamada, não importa quantas rodem "ao mesmo tempo" do ponto de
+// vista do código chamador.
+// ---------------------------------------------------------------------
+const MIN_INTERVAL_MS = 350; // ~2.85 req/s — com folga sobre o limite de 3/s
+let slotQueue = Promise.resolve();
+let lastSlotAt = 0;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function reserveSlot() {
+  const next = slotQueue.then(async () => {
+    const wait = Math.max(0, lastSlotAt + MIN_INTERVAL_MS - Date.now());
+    if (wait > 0) await sleep(wait);
+    lastSlotAt = Date.now();
+  });
+  // Mantém a fila viva mesmo que algo dê errado no meio (não deveria).
+  slotQueue = next.catch(() => {});
+  return next;
+}
+
+// Chamada genérica autenticada à API do Bling, com:
+//  - espaçamento automático entre chamadas (rate limit do Bling)
+//  - repetição com espera quando o Bling devolve 429 (limite atingido)
+//  - uma tentativa de renovação de token em caso de 401 (token expirado
+//    no meio do caminho)
 export async function blingGet(path, searchParams = {}) {
-  const token = await getValidAccessToken();
   const url = new URL(`${API_BASE}${path}`);
   for (const [key, value] of Object.entries(searchParams)) {
     if (value !== undefined && value !== null && value !== "") {
@@ -155,25 +185,47 @@ export async function blingGet(path, searchParams = {}) {
       },
     });
 
-  let res = await doFetch(token);
-  if (res.status === 401) {
-    // Token pode ter expirado antes do previsto — força renovação e tenta 1x mais.
-    const tokens = loadTokens();
-    const fresh = await refreshAccessToken(tokens.refresh_token);
-    res = await doFetch(fresh.access_token);
+  const MAX_ATTEMPTS = 5;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    await reserveSlot();
+    const token = await getValidAccessToken();
+    let res = await doFetch(token);
+
+    if (res.status === 401) {
+      // Token pode ter expirado antes do previsto — força renovação e tenta 1x mais.
+      const tokens = loadTokens();
+      const fresh = await refreshAccessToken(tokens.refresh_token);
+      res = await doFetch(fresh.access_token);
+    }
+
+    if (res.status === 429 && attempt < MAX_ATTEMPTS) {
+      const retryAfterHeader = res.headers.get("retry-after");
+      const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : null;
+      const backoffMs = retryAfterMs && !Number.isNaN(retryAfterMs) ? retryAfterMs : attempt * 700;
+      await sleep(backoffMs);
+      continue; // tenta de novo
+    }
+
+    const text = await res.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`Bling ${path} respondeu algo não-JSON (status ${res.status}): ${text.slice(0, 300)}`);
+    }
+
+    if (!res.ok) {
+      if (res.status === 429) {
+        // Esgotou as tentativas.
+        throw new Error(`Bling ${path} falhou (status 429): limite de requisições atingido mesmo após repetições.`);
+      }
+      const msg = data?.error?.message || data?.message || JSON.stringify(data);
+      throw new Error(`Bling ${path} falhou (status ${res.status}): ${msg}`);
+    }
+    return data;
   }
 
-  const text = await res.text();
-  let data;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`Bling ${path} respondeu algo não-JSON (status ${res.status}): ${text.slice(0, 300)}`);
-  }
-
-  if (!res.ok) {
-    const msg = data?.error?.message || data?.message || JSON.stringify(data);
-    throw new Error(`Bling ${path} falhou (status ${res.status}): ${msg}`);
-  }
-  return data;
+  // Não deveria chegar aqui, mas por segurança:
+  throw new Error(`Bling ${path} falhou após ${MAX_ATTEMPTS} tentativas.`);
 }
