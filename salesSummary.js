@@ -24,7 +24,7 @@ async function mapWithConcurrency(items, limit, fn) {
   return results;
 }
 
-async function listAllPedidos(dataInicial, dataFinal, maxPedidos) {
+async function listAllPedidos(dataInicial, dataFinal, maxPedidos, idLoja) {
   const pedidos = [];
   let pagina = 1;
   const limite = 100;
@@ -34,13 +34,18 @@ async function listAllPedidos(dataInicial, dataFinal, maxPedidos) {
       dataFinal,
       pagina,
       limite,
+      // Tentamos passar idLoja direto pro Bling (caso o endpoint suporte),
+      // mas SEMPRE filtramos de novo no código logo abaixo — não confiamos
+      // cegamente que o parâmetro é respeitado pela API.
+      idLoja,
     });
     const batch = resp?.data || [];
     pedidos.push(...batch);
     if (batch.length < limite) break; // última página
     pagina += 1;
   }
-  return pedidos.slice(0, maxPedidos);
+  const filtrados = idLoja ? pedidos.filter((p) => p?.loja?.id === idLoja) : pedidos;
+  return filtrados.slice(0, maxPedidos);
 }
 
 // Situações do Bling cujo pedido NÃO deve contar como venda efetiva
@@ -49,8 +54,8 @@ async function listAllPedidos(dataInicial, dataFinal, maxPedidos) {
 // por um "adivinhar" nosso.
 const SITUACAO_CANCELADO_IDS = new Set([6, 12]); // IDs padrão do Bling p/ "Cancelado" — ver nota no resultado
 
-export async function resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos = 300 }) {
-  const pedidos = await listAllPedidos(dataInicial, dataFinal, maxPedidos);
+export async function resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos = 300, idLoja }) {
+  const pedidos = await listAllPedidos(dataInicial, dataFinal, maxPedidos, idLoja);
 
   const pedidosValidos = pedidos.filter((p) => !SITUACAO_CANCELADO_IDS.has(p?.situacao?.id));
   const pedidosCancelados = pedidos.length - pedidosValidos.length;
@@ -165,7 +170,7 @@ export async function resumoVendasPeriodo({ dataInicial, dataFinal, maxPedidos =
   const todosErros = [...erros, ...errosEnriquecimento];
 
   return {
-    periodo: { dataInicial, dataFinal },
+    periodo: { dataInicial, dataFinal, idLoja: idLoja ?? null },
     totalPedidosEncontrados: pedidos.length,
     pedidosCancelados,
     pedidosAnalisados: pedidosValidos.length,
