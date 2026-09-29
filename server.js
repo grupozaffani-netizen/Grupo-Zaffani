@@ -51,7 +51,7 @@ app.get("/", (_req, res) => {
   <p><a href="${authorizeUrl}" style="display:inline-block; padding:10px 16px; background:#2563eb; color:#fff; border-radius:6px; text-decoration:none;">
     ${connected ? "Reconectar ao Bling" : "Conectar ao Bling"}
   </a></p>
-  <p style="color:#666; font-size:14px;">O endereço MCP para colar no Claude é: <code>${_req.protocol}://${_req.get("host")}/mcp</code></p>
+  <p style="color:#666; font-size:14px;">O endereço MCP para colar no Claude é: <code>${_req.protocol}://${_req.get("host")}${process.env.MCP_SEGREDO ? "/mcp/(seu segredo)" : "/mcp"}</code></p>
 </body>
 </html>`);
 });
@@ -232,7 +232,11 @@ function createMcpServer() {
 // por requisição, mais simples de rodar em hospedagens com múltiplas
 // instâncias/sem afinidade de sessão, como o plano free do Render).
 // ---------------------------------------------------------------------
-app.post("/mcp", async (req, res) => {
+// Se MCP_SEGREDO estiver configurado, o endereço do conector passa a ser
+// /mcp/<segredo> (protege os dados de clientes). Sem a variável, continua /mcp.
+const MCP_PATH = process.env.MCP_SEGREDO ? `/mcp/${process.env.MCP_SEGREDO}` : "/mcp";
+
+app.post(MCP_PATH, async (req, res) => {
   try {
     const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({
