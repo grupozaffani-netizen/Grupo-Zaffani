@@ -226,6 +226,68 @@ function createMcpServer() {
   );
 
   server.registerTool(
+    "buscar_pedidos_cliente",
+    {
+      title: "Buscar pedidos de uma cliente por CPF ou nome",
+      description:
+        "Procura a cliente pelo CPF/CNPJ (com ou sem pontuação) ou pelo nome e devolve os pedidos dela dos últimos 12 meses (número do Bling, número da loja, data, total e itens resumidos), do mais recente para o mais antigo. Depois use buscar_pedido_troca com o número do Bling escolhido para pegar endereço e dados completos.",
+      inputSchema: {
+        cpfOuNome: z.string().describe("CPF/CNPJ ou nome da cliente"),
+      },
+    },
+    async ({ cpfOuNome }) => {
+      const termo = String(cpfOuNome || "").trim();
+      const doc = termo.replace(/\D/g, "");
+      const ehDoc = doc.length === 11 || doc.length === 14;
+      const soDig = (s) => String(s || "").replace(/\D/g, "");
+
+      let contatos = [];
+      const buscas = ehDoc
+        ? [{ numeroDocumento: doc }, { pesquisa: doc }, { pesquisa: termo }]
+        : [{ pesquisa: termo }];
+      for (const filtro of buscas) {
+        try {
+          const r = await blingGet("/contatos", { ...filtro, limite: 20 });
+          let lista = r?.data || [];
+          if (ehDoc) lista = lista.filter((c) => soDig(c.numeroDocumento) === doc);
+          if (lista.length) { contatos = lista; break; }
+        } catch (e) {
+          // tenta a próxima forma de busca
+        }
+      }
+      if (!contatos.length) {
+        return { content: [{ type: "text", text: JSON.stringify({ encontrado: false, termo, mensagem: ehDoc ? "Nenhuma cliente com esse CPF/CNPJ no Bling." : "Nenhuma cliente com esse nome no Bling." }) }] };
+      }
+
+      const inicio = new Date(Date.now() - 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+      const pedidos = [];
+      for (const c of contatos.slice(0, 3)) {
+        try {
+          const r = await blingGet("/pedidos/vendas", { idContato: c.id, dataInicial: inicio, limite: 20 });
+          for (const p of r?.data || []) {
+            pedidos.push({
+              numero: p.numero,
+              numeroLoja: p.numeroLoja || null,
+              data: p.data,
+              total: p.total,
+              cliente: c.nome,
+              cpfCnpj: c.numeroDocumento || "",
+            });
+          }
+        } catch (e) {}
+      }
+      pedidos.sort((x, y) => String(y.data).localeCompare(String(x.data)));
+      const resultado = {
+        encontrado: pedidos.length > 0,
+        clientes: contatos.slice(0, 3).map((c) => ({ nome: c.nome, cpfCnpj: c.numeroDocumento || "" })),
+        pedidos: pedidos.slice(0, 10),
+        mensagem: pedidos.length ? null : "Cliente encontrada, mas sem pedidos nos últimos 12 meses.",
+      };
+      return { content: [{ type: "text", text: JSON.stringify(resultado) }] };
+    }
+  );
+
+  server.registerTool(
     "buscar_pedido_troca",
     {
       title: "Buscar pedido para troca (dados da cliente)",
