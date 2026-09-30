@@ -10,8 +10,15 @@
 import fs from "node:fs";
 
 const FILE = new URL("./tokens.local.json", import.meta.url);
-const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, "");
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+// Limpa espaços, quebras de linha, aspas e "NOME=" que às vezes vêm junto na cópia.
+function limpar(v, nome) {
+  let s = String(v || "").trim();
+  if (s.startsWith(nome + "=")) s = s.slice(nome.length + 1).trim();
+  s = s.replace(/^["'“”‘’]+|["'“”‘’]+$/g, "").trim();
+  return s;
+}
+const UPSTASH_URL = limpar(process.env.UPSTASH_REDIS_REST_URL, "UPSTASH_REDIS_REST_URL").replace(/\/+$/, "");
+const UPSTASH_TOKEN = limpar(process.env.UPSTASH_REDIS_REST_TOKEN, "UPSTASH_REDIS_REST_TOKEN");
 const USA_UPSTASH = Boolean(UPSTASH_URL && UPSTASH_TOKEN);
 // Uma chave por aplicativo do Bling, para CZ e New Man poderem usar o mesmo banco.
 const CHAVE =
@@ -38,6 +45,12 @@ export async function initTokenStore() {
     console.log("[tokenStore] Upstash não configurado: usando só o arquivo local.");
     return;
   }
+  const bruto = String(process.env.UPSTASH_REDIS_REST_TOKEN || "");
+  console.log(
+    `[tokenStore] Diagnóstico do token: ${UPSTASH_TOKEN.length} caracteres` +
+      (bruto.length !== UPSTASH_TOKEN.length ? ` (limpei ${bruto.length - UPSTASH_TOKEN.length} caracteres extras)` : "") +
+      `, começa com "${UPSTASH_TOKEN.slice(0, 4)}"`
+  );
   try {
     const valor = await upstash(`get/${CHAVE}`);
     if (valor) {
