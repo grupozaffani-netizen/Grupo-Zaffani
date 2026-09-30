@@ -225,6 +225,76 @@ function createMcpServer() {
     }
   );
 
+  server.registerTool(
+    "buscar_pedido_troca",
+    {
+      title: "Buscar pedido para troca (dados da cliente)",
+      description:
+        "Busca um pedido de venda pelo número do Bling (ex: 4543) ou pelo número da loja/marketplace (ex: 17900102551573) e devolve, num só resultado, os dados do pedido (itens e valores) e da cliente: nome, CPF/CNPJ, telefone, e-mail e o endereço de entrega (ou o do cadastro). Usado pelo painel de trocas para gerar a etiqueta.",
+      inputSchema: {
+        numero: z.string().describe("Número do pedido no Bling ou número da loja/marketplace"),
+      },
+    },
+    async ({ numero }) => {
+      const alvo = String(numero || "").trim();
+      const digitos = alvo.replace(/\D/g, "");
+      const bate = (p) =>
+        String(p.numero) === alvo || String(p.numero) === digitos ||
+        String(p.numeroLoja || "") === alvo || String(p.numeroLoja || "").replace(/\D/g, "") === digitos;
+
+      let achado = null;
+      const tentativas = [];
+      if (digitos && digitos.length <= 9) tentativas.push({ numero: digitos });
+      tentativas.push({ "numerosLojas[]": alvo });
+      if (digitos && digitos !== alvo) tentativas.push({ "numerosLojas[]": digitos });
+      for (const filtro of tentativas) {
+        try {
+          const r = await blingGet("/pedidos/vendas", { ...filtro, limite: 100 });
+          achado = (r?.data || []).find(bate) || null;
+          if (achado) break;
+        } catch (e) {
+          // tenta o próximo filtro
+        }
+      }
+      if (!achado) {
+        return { content: [{ type: "text", text: JSON.stringify({ encontrado: false, numero: alvo, mensagem: "Pedido não encontrado. Confira o número (Bling ou da loja)." }) }] };
+      }
+
+      const det = (await blingGet(`/pedidos/vendas/${achado.id}`))?.data || {};
+      let contato = {};
+      const idContato = det?.contato?.id || achado?.contato?.id;
+      if (idContato) {
+        try { contato = (await blingGet(`/contatos/${idContato}`))?.data || {}; } catch {}
+      }
+      const et = det?.transporte?.etiqueta || {};
+      const geral = contato?.endereco?.geral || {};
+      const usarEtiqueta = Boolean(et.cep && (et.endereco || et.logradouro));
+      const end = usarEtiqueta
+        ? { origem: "entrega do pedido", cep: et.cep, logradouro: et.endereco || et.logradouro, numero: et.numero, complemento: et.complemento, bairro: et.bairro, cidade: et.municipio, uf: et.uf }
+        : { origem: "cadastro da cliente", cep: geral.cep, logradouro: geral.endereco, numero: geral.numero, complemento: geral.complemento, bairro: geral.bairro, cidade: geral.municipio, uf: geral.uf };
+
+      const resultado = {
+        encontrado: true,
+        pedido: {
+          id: det.id || achado.id,
+          numero: det.numero || achado.numero,
+          numeroLoja: det.numeroLoja || achado.numeroLoja || null,
+          data: det.data || achado.data,
+          total: det.total ?? achado.total,
+          itens: (det.itens || []).map((i) => ({ codigo: i.codigo, descricao: i.descricao, quantidade: i.quantidade, valor: i.valor })),
+        },
+        cliente: {
+          nome: et.nome || contato.nome || det?.contato?.nome || achado?.contato?.nome || "",
+          cpfCnpj: contato.numeroDocumento || det?.contato?.numeroDocumento || achado?.contato?.numeroDocumento || "",
+          telefone: contato.celular || contato.telefone || "",
+          email: contato.email || "",
+          endereco: end,
+        },
+      };
+      return { content: [{ type: "text", text: JSON.stringify(resultado) }] };
+    }
+  );
+
   return server;
 }
 
