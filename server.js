@@ -24,6 +24,7 @@ import {
   blingGet,
 } from "./bling.js";
 import { resumoVendasPeriodo } from "./salesSummary.js";
+import { initTokenStore } from "./tokenStore.js";
 
 const PORT = process.env.PORT || 3000;
 const app = express();
@@ -259,6 +260,8 @@ app.post(MCP_PATH, async (req, res) => {
     }
   }
 });
+
+await initTokenStore();
 
 app.listen(PORT, () => {
   console.log(`Bling MCP server rodando na porta ${PORT}`);
