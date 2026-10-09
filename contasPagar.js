@@ -89,7 +89,33 @@ async function mapaCategorias() {
   return mapa;
 }
 
-export async function resumoContasPagar({ diasAFrente = 30, maxDetalhes = 120, anosAtras = 3 } = {}) {
+// ---------------------------------------------------------------------
+// Caches em memória (somem quando o servidor reinicia, e tudo bem).
+// O Bling só aceita ~3 consultas por segundo, então montar o resumo de
+// uma conta com centenas de lançamentos leva minutos. Para o painel não
+// estourar o tempo limite:
+//  - o resultado completo fica guardado por alguns minutos;
+//  - duas chamadas iguais ao mesmo tempo compartilham a mesma busca;
+//  - nomes de fornecedor e detalhes de cada conta são reaproveitados.
+// ---------------------------------------------------------------------
+const RESUMO_TTL_MS = 5 * 60 * 1000;
+const DETALHE_TTL_MS = 6 * 60 * 60 * 1000;
+const cacheNomes = new Map();
+const cacheDetalhes = new Map();
+const cacheResumo = new Map(); // chave -> { em, promessa }
+
+export async function resumoContasPagar(opcoes = {}) {
+  const { diasAFrente = 30, maxDetalhes = 120, anosAtras = 3 } = opcoes;
+  const chave = JSON.stringify([hojeSP(), diasAFrente, maxDetalhes, anosAtras]);
+  const atual = cacheResumo.get(chave);
+  if (atual && Date.now() - atual.em < RESUMO_TTL_MS) return atual.promessa;
+  const promessa = montarResumo({ diasAFrente, maxDetalhes, anosAtras });
+  cacheResumo.set(chave, { em: Date.now(), promessa });
+  promessa.catch(() => cacheResumo.delete(chave)); // erro não fica guardado
+  return promessa;
+}
+
+async function montarResumo({ diasAFrente = 30, maxDetalhes = 120, anosAtras = 3 } = {}) {
   const hoje = hojeSP();
   const limiteData = somaDias(hoje, diasAFrente);
   // Até onde olhar para trás nas vencidas (contas muito antigas em aberto
@@ -122,19 +148,24 @@ export async function resumoContasPagar({ diasAFrente = 30, maxDetalhes = 120, a
   const paraDetalhar = contas.slice(0, maxDetalhes);
   const detalhes = new Map();
   for (const c of paraDetalhar) {
+    const guardado = cacheDetalhes.get(c.id);
+    if (guardado && Date.now() - guardado.em < DETALHE_TTL_MS) { detalhes.set(c.id, guardado.d); continue; }
     try {
       const d = (await blingGet(`/contas/pagar/${c.id}`))?.data;
-      if (d) detalhes.set(c.id, d);
+      if (d) { detalhes.set(c.id, d); cacheDetalhes.set(c.id, { d, em: Date.now() }); }
     } catch (e) {}
   }
 
-  // Nomes dos fornecedores (um por contato)
+  // Nomes dos fornecedores (um por contato). Ficam guardados na memória do
+  // servidor: nome de fornecedor quase nunca muda, e assim só a primeira
+  // consulta paga o custo de buscar cada um.
   const nomes = new Map();
   const idsContato = [...new Set(contas.map((c) => c?.contato?.id).filter(Boolean))];
   for (const id of idsContato.slice(0, 150)) {
+    if (cacheNomes.has(id)) { nomes.set(id, cacheNomes.get(id)); continue; }
     try {
       const ct = (await blingGet(`/contatos/${id}`))?.data;
-      if (ct) nomes.set(id, ct.nome || ct.fantasia || "");
+      if (ct) { const nome = ct.nome || ct.fantasia || ""; nomes.set(id, nome); cacheNomes.set(id, nome); }
     } catch (e) {}
   }
 
