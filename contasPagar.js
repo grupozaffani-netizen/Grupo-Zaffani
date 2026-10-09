@@ -30,19 +30,46 @@ function diffDias(a, b) {
 
 const arred = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-async function listarTodas(situacao, dataVencimentoFinal, maxPaginas) {
-  const todas = [];
+// O Bling recusa filtros de vencimento com período muito longo
+// ("Período do filtro é maior que o permitido"). Por isso a busca é
+// feita em janelas: começa com ~1 ano por janela e, se o Bling ainda
+// reclamar do tamanho, divide a janela pela metade e tenta de novo.
+const ERRO_PERIODO = /per[ií]odo do filtro/i;
+let tamanhoJanela = 365; // lembra o tamanho que funcionou entre chamadas
+
+async function listarJanela(situacao, inicio, fim, maxPaginas) {
+  const itens = [];
   for (let pagina = 1; pagina <= maxPaginas; pagina++) {
     const r = await blingGet("/contas/pagar", {
       situacao,
-      dataVencimentoInicial: "2010-01-01",
-      dataVencimentoFinal,
+      dataVencimentoInicial: inicio,
+      dataVencimentoFinal: fim,
       pagina,
       limite: 100,
     });
     const lista = r?.data || [];
-    todas.push(...lista);
+    itens.push(...lista);
     if (lista.length < 100) break;
+  }
+  return itens;
+}
+
+async function listarTodas(situacao, dataInicio, dataVencimentoFinal, maxPaginas) {
+  const todas = [];
+  let fim = dataVencimentoFinal;
+  while (fim >= dataInicio) {
+    let inicio = somaDias(fim, -(tamanhoJanela - 1));
+    if (inicio < dataInicio) inicio = dataInicio;
+    try {
+      todas.push(...(await listarJanela(situacao, inicio, fim, maxPaginas)));
+    } catch (err) {
+      if (ERRO_PERIODO.test(String(err.message || "")) && tamanhoJanela > 7) {
+        tamanhoJanela = Math.max(7, Math.floor(tamanhoJanela / 2));
+        continue; // repete a mesma janela, agora menor
+      }
+      throw err;
+    }
+    fim = somaDias(inicio, -1);
   }
   return todas;
 }
@@ -62,15 +89,18 @@ async function mapaCategorias() {
   return mapa;
 }
 
-export async function resumoContasPagar({ diasAFrente = 30, maxDetalhes = 120 } = {}) {
+export async function resumoContasPagar({ diasAFrente = 30, maxDetalhes = 120, anosAtras = 3 } = {}) {
   const hoje = hojeSP();
   const limiteData = somaDias(hoje, diasAFrente);
+  // Até onde olhar para trás nas vencidas (contas muito antigas em aberto
+  // costumam ser lançamentos esquecidos; aumente anosAtras se precisar).
+  const dataInicio = somaDias(hoje, -Math.round(anosAtras * 365));
 
   let brutas;
   try {
     const [abertas, parciais] = [
-      await listarTodas(1, limiteData, 20),
-      await listarTodas(3, limiteData, 5),
+      await listarTodas(1, dataInicio, limiteData, 20),
+      await listarTodas(3, dataInicio, limiteData, 5),
     ];
     brutas = [...abertas, ...parciais];
   } catch (err) {
@@ -152,7 +182,7 @@ export async function resumoContasPagar({ diasAFrente = 30, maxDetalhes = 120 } 
 
   return {
     hoje,
-    janela: { ate: limiteData, diasAFrente },
+    janela: { desde: dataInicio, ate: limiteData, diasAFrente, anosAtras },
     totais,
     quantidade: lista.length,
     detalhadas: Math.min(lista.length, maxDetalhes),
