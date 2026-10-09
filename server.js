@@ -7,6 +7,7 @@
 //   - resumo_vendas_periodo   (agrega vendas por produto num período, com margem e estoque)
 //   - listar_lojas
 //   - consultar_contato       (dados cadastrais + endereço/cidade de um cliente, por idContato)
+//   - resumo_contas_pagar     (contas a pagar vencidas, de hoje e a vencer, com totais)
 //
 // E duas rotas de navegador para conectar a conta Bling uma única vez:
 //   GET /            -> página de status + botão "Conectar ao Bling"
@@ -24,6 +25,7 @@ import {
   blingGet,
 } from "./bling.js";
 import { resumoVendasPeriodo } from "./salesSummary.js";
+import { resumoContasPagar } from "./contasPagar.js";
 import { initTokenStore } from "./tokenStore.js";
 
 const PORT = process.env.PORT || 3000;
@@ -354,6 +356,35 @@ function createMcpServer() {
         },
       };
       return { content: [{ type: "text", text: JSON.stringify(resultado) }] };
+    }
+  );
+
+  server.registerTool(
+    "resumo_contas_pagar",
+    {
+      title: "Resumo de contas a pagar (vencidas, hoje e a vencer)",
+      description:
+        "Lista as contas a pagar em aberto (e parcialmente pagas) do Bling: todas as vencidas e as que vencem até 'diasAFrente' dias. Devolve totais (vencidas, vencem hoje, próximos 7 dias, até 30 dias) e cada conta com vencimento, status (vencida/hoje/a_vencer), dias de atraso, valor em aberto, fornecedor, descrição, documento e categoria. Datas no fuso de São Paulo.",
+      inputSchema: {
+        diasAFrente: z
+          .number()
+          .int()
+          .min(0)
+          .max(120)
+          .default(30)
+          .describe("Quantos dias à frente incluir nas contas a vencer (padrão 30)"),
+        maxDetalhes: z
+          .number()
+          .int()
+          .min(0)
+          .max(300)
+          .default(120)
+          .describe("Quantas contas (das mais urgentes) buscar com descrição/categoria completas"),
+      },
+    },
+    async ({ diasAFrente, maxDetalhes }) => {
+      const data = await resumoContasPagar({ diasAFrente, maxDetalhes });
+      return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }
   );
 
